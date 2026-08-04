@@ -1,0 +1,20 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+language: "en-US"
+early_access: false
+
+reviews:
+  profile: "assertive"
+  request_changes_workflow: true
+  high_level_summary: true
+  review_status: true
+  poem: false
+  auto_review:
+    enabled: true
+    drafts: true
+  path_instructions:
+    - path: "**/*"
+      instructions: |
+        Read AGENTS.md and AI_WORKFLOW.md before reviewing. Enforce project-specific invariants, one-primary-writer workflow, honest test reporting, protected-file restrictions, security boundaries, backward compatibility, and required documentation updates. Focus on actionable defects and never recommend edits to protected, generated, minified, or opaque vendor files.
+
+chat:
+  auto_reply: true
