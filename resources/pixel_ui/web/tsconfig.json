@@ -1,0 +1,31 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "strict": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": false,
+    "jsx": "react",
+    "module": "none",
+    "outFile": ".build/pixel-app.js",
+    "noEmitOnError": true,
+    "removeComments": true
+  },
+  "files": [
+    "src/types/react-globals.d.ts",
+    "src/core/schema.ts",
+    "src/core/lifecycle.ts",
+    "src/core/keyboard.ts",
+    "src/core/bridge.ts",
+    "src/components/controls.tsx",
+    "src/components/PixelButton.tsx",
+    "src/components/layout.tsx",
+    "src/components/overlays.tsx",
+    "src/components/data.tsx",
+    "src/Showcase.tsx",
+    "src/App.tsx",
+    "src/main.tsx"
+  ]
+}

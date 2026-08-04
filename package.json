@@ -1,0 +1,14 @@
+{
+  "name": "pixel-network-foundation",
+  "private": true,
+  "version": "0.2.1",
+  "scripts": {
+    "tokens": "node tools/generate-tokens.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "validate": "node tools/validate-resource.mjs",
+    "ui:install": "npm --prefix resources/pixel_ui/web ci",
+    "ui:typecheck": "npm --prefix resources/pixel_ui/web run typecheck",
+    "ui:build": "node tools/build-ui.mjs",
+    "verify": "npm run tokens && npm run ui:typecheck && npm run ui:build && npm run test && npm run validate"
+  }
+}

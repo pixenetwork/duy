@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "reactVersion": "18.2.0",
+  "source": "JupyterLab production distribution",
+  "webpackGlobal": "webpackChunk_jupyterlab_application_top",
+  "modules": {
+    "react": 96540,
+    "reactAlias": 44914,
+    "reactDom": 40961
+  },
+  "files": {
+    "react": {
+      "path": "react.production.chunk.js",
+      "sha256": "6af644f0b2def8b62db1935a15c97c97cc1c9d0fa1f70af1ffd83a5cca080b61"
+    },
+    "reactDom": {
+      "path": "react-dom.production.chunk.js",
+      "sha256": "4c0e5031d01762064070ac8f272fcb191164fea351f61bdd6477f584ea829b15"
+    },
+    "license": {
+      "path": "LICENSE.txt",
+      "sha256": "da6d3703ed11cbe42bd212c725957c98da23cbff1998c05fa4b3d976d1a58e93"
+    }
+  }
+}

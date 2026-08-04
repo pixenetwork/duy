@@ -1,0 +1,67 @@
+{
+  "$schema": "https://design-tokens.github.io/community-group/format/",
+  "color": {
+    "obsidian950": { "$value": "#05070D", "$type": "color" },
+    "obsidian900": { "$value": "#090D16", "$type": "color" },
+    "panel": { "$value": "rgba(13, 19, 32, 0.88)", "$type": "color" },
+    "panelSolid": { "$value": "#0D1320", "$type": "color" },
+    "surfaceRaised": { "$value": "#131D31", "$type": "color" },
+    "chrome": { "$value": "#DCE7F6", "$type": "color" },
+    "electricBlue": { "$value": "#29A8FF", "$type": "color" },
+    "whiteCore": { "$value": "#F7FBFF", "$type": "color" },
+    "violetEdge": { "$value": "#8A5CFF", "$type": "color" },
+    "textMuted": { "$value": "#9AA9BD", "$type": "color" },
+    "border": { "$value": "rgba(220, 231, 246, 0.24)", "$type": "color" },
+    "focus": { "$value": "#8FD5FF", "$type": "color" },
+    "success": { "$value": "#31E6C2", "$type": "color" },
+    "warning": { "$value": "#FFBF57", "$type": "color" },
+    "danger": { "$value": "#FF4E6A", "$type": "color" }
+  },
+  "space": {
+    "1": { "$value": "4px", "$type": "dimension" },
+    "2": { "$value": "8px", "$type": "dimension" },
+    "3": { "$value": "12px", "$type": "dimension" },
+    "4": { "$value": "16px", "$type": "dimension" },
+    "5": { "$value": "20px", "$type": "dimension" },
+    "6": { "$value": "24px", "$type": "dimension" },
+    "8": { "$value": "32px", "$type": "dimension" },
+    "10": { "$value": "40px", "$type": "dimension" }
+  },
+  "radius": {
+    "small": { "$value": "6px", "$type": "dimension" },
+    "medium": { "$value": "12px", "$type": "dimension" },
+    "orbital": { "$value": "24px", "$type": "dimension" }
+  },
+  "font": {
+    "body": { "$value": "Inter, Geist, system-ui, sans-serif", "$type": "fontFamily" },
+    "mono": { "$value": "ui-monospace, SFMono-Regular, Consolas, monospace", "$type": "fontFamily" },
+    "sizeSmall": { "$value": "12px", "$type": "dimension" },
+    "sizeBody": { "$value": "14px", "$type": "dimension" },
+    "sizeTitle": { "$value": "24px", "$type": "dimension" },
+    "weightRegular": { "$value": "400", "$type": "fontWeight" },
+    "weightMedium": { "$value": "600", "$type": "fontWeight" },
+    "weightBold": { "$value": "700", "$type": "fontWeight" }
+  },
+  "size": {
+    "control": { "$value": "42px", "$type": "dimension" },
+    "sidebar": { "$value": "232px", "$type": "dimension" },
+    "header": { "$value": "64px", "$type": "dimension" }
+  },
+  "elevation": {
+    "panel": { "$value": "0 18px 60px rgba(0, 0, 0, 0.42)", "$type": "shadow" },
+    "overlay": { "$value": "0 24px 90px rgba(0, 0, 0, 0.62)", "$type": "shadow" },
+    "energy": { "$value": "0 0 28px rgba(41, 168, 255, 0.2)", "$type": "shadow" }
+  },
+  "layer": {
+    "base": { "$value": "0", "$type": "number" },
+    "navigation": { "$value": "10", "$type": "number" },
+    "overlay": { "$value": "100", "$type": "number" },
+    "toast": { "$value": "200", "$type": "number" },
+    "tooltip": { "$value": "300", "$type": "number" }
+  },
+  "motion": {
+    "fast": { "$value": "120ms", "$type": "duration" },
+    "panel": { "$value": "220ms", "$type": "duration" },
+    "application": { "$value": "300ms", "$type": "duration" }
+  }
+}

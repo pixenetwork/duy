@@ -1,0 +1,13 @@
+{
+  "name": "@pixel-network/ui",
+  "private": true,
+  "version": "0.2.1",
+  "type": "module",
+  "scripts": {
+    "build": "node ../../../tools/build-ui.mjs",
+    "typecheck": "tsc --noEmit --project tsconfig.json"
+  },
+  "devDependencies": {
+    "typescript": "5.8.3"
+  }
+}
