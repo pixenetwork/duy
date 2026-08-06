@@ -1,0 +1,20 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+language: "en-US"
+early_access: false
+
+reviews:
+  profile: "assertive"
+  request_changes_workflow: true
+  high_level_summary: true
+  review_status: true
+  poem: false
+  auto_review:
+    enabled: true
+    drafts: true
+  path_instructions:
+    - path: "**/*"
+      instructions: |
+        Read AGENTS.md and AI_WORKFLOW.md first. Enforce one-primary-writer ownership, CI-before-review escalation, review-budget backoff, honest validation evidence, protected-file restrictions, and Duy's final merge authority. Focus on actionable defects.
+
+chat:
+  auto_reply: true
