@@ -33,13 +33,25 @@ test('streamable-http initialize accepts bounded JSON or SSE response framing', 
   assert.match(windowsMcp, /262144/);
 });
 
-test('documented SSE transport is detected only through the fixed loopback endpoint', () => {
+test('documented legacy SSE transport proves MCP identity through initialize', () => {
   const windowsMcp = loadWindowsMcpBody();
-  assert.match(windowsMcp, /function Test-McpSseEndpoint/);
+  assert.match(windowsMcp, /function Get-McpLegacySseServerName/);
   assert.match(windowsMcp, /'http:\/\/127\.0\.0\.1:8000\/sse'/);
   assert.match(windowsMcp, /ResponseHeadersRead/);
   assert.match(windowsMcp, /text\/event-stream/);
+  assert.match(windowsMcp, /endpoint/i);
+  assert.match(windowsMcp, /\/messages\/?/);
+  assert.match(windowsMcp, /Get-McpServerNameFromJson/);
+  assert.match(windowsMcp, /\$legacyName -eq 'windows-mcp'/);
+  assert.doesNotMatch(windowsMcp, /return \(\$mediaType -eq 'text\/event-stream'\)/);
   assert.doesNotMatch(windowsMcp, /http:\/\/\$|https:\/\/\$/);
+});
+
+test('legacy SSE message endpoint is constrained to exact loopback host and fixed messages path', () => {
+  const windowsMcp = loadWindowsMcpBody();
+  assert.match(windowsMcp, /Host -ne '127\.0\.0\.1'/);
+  assert.match(windowsMcp, /Port -ne 8000/);
+  assert.match(windowsMcp, /AbsolutePath -notin @\('\/messages','\/messages\/'\)/);
 });
 
 test('health receipt exposes only a bounded transport classification', () => {
