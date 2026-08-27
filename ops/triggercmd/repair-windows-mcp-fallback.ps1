@@ -30,30 +30,48 @@ function Send-Result {
   }
 }
 
+# Bounded Windows-MCP identity proof via the MCP initialize handshake. The
+# official CursorTouch Windows-MCP install registers the `windows-mcp-server`
+# task whose action launches a wrapper (~/.windows-mcp/start-server.cmd) that
+# re-execs `python -m windows_mcp serve`, so the process owning the loopback
+# LISTENER is a python child, NOT the task action path. Comparing process paths
+# would therefore reject a healthy official install. Instead we bind the
+# 127.0.0.1 listener to the exact canonical FastMCP server name ("windows-mcp")
+# by running a single bounded MCP `initialize` exchange; an unrelated listener
+# that does not speak the MCP protocol with that exact server identity fails.
+function Get-McpServerName {
+  $payload = '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"jarvis-ops","version":"1"}}}'
+  try {
+    $client = [System.Net.Http.HttpClient]::new()
+    try {
+      $client.Timeout = [TimeSpan]::FromSeconds(5)
+      $content = [System.Net.Http.StringContent]::new($payload, [System.Text.Encoding]::UTF8, 'application/json')
+      $resp = $client.PostAsync("$listenerAddress`:$listenerPort/mcp/", $content).GetAwaiter().GetResult()
+      if (-not $resp.IsSuccessStatusCode) { return $null }
+      $bytes = $resp.Content.ReadAsByteArrayAsync().GetAwaiter().GetResult()
+      if ($bytes.Length -gt 262144) { return $null }
+      $json = [System.Text.Encoding]::UTF8.GetString($bytes)
+      $data = $json | ConvertFrom-Json -ErrorAction Stop
+      if (-not $data.result -or -not $data.result.serverInfo) { return $null }
+      return [string]$data.result.serverInfo.name
+    } finally {
+      $client.Dispose()
+    }
+  } catch {
+    return $null
+  }
+}
+
 function Get-McpState {
   $task = Get-ScheduledTask -TaskName 'windows-mcp-server' -ErrorAction SilentlyContinue
   $taskState = if ($task) { [string]$task.State } else { 'Missing' }
-  # Exact bounded Windows-MCP identity: derive the expected executable solely
-  # from the single action of the canonical windows-mcp-server task, then bind
-  # the 127.0.0.1 listener to it by exact-PID inspection. No arbitrary process
-  # command-line enumeration; an unrelated listener can never satisfy identity.
-  $expectedExe = ''
-  if ($task -and @($task.Actions).Count -eq 1) {
-    $expectedExe = [IO.Path]::GetFullPath(([string]@($task.Actions)[0].Execute).Trim())
-  }
   $listener = Get-NetTCPConnection -State Listen -LocalAddress $listenerAddress -LocalPort $listenerPort -ErrorAction SilentlyContinue | Select-Object -First 1
+  # Identity is proven only by the MCP initialize handshake naming the canonical
+  # windows-mcp server; an unrelated listener can never satisfy it.
   $identity = $false
-  if ($listener -and -not [string]::IsNullOrWhiteSpace($expectedExe)) {
-    $ownerPid = 0
-    if ([int]::TryParse([string]$listener.OwningProcess, [ref]$ownerPid) -and $ownerPid -gt 0) {
-      $proc = Get-Process -Id $ownerPid -ErrorAction SilentlyContinue
-      try {
-        $procPath = [IO.Path]::GetFullPath([string]$proc.Path)
-        $identity = $procPath.Equals($expectedExe, [StringComparison]::OrdinalIgnoreCase)
-      } catch {
-        $identity = $false
-      }
-    }
+  if ($listener) {
+    $name = Get-McpServerName
+    $identity = ($name -eq 'windows-mcp')
   }
   [pscustomobject]@{
     TaskState = $taskState
@@ -78,8 +96,8 @@ try {
     if (-not $listener) { $failCode = 'mcp-listener-not-ready'; throw $failCode }
   }
   $state = Get-McpState
-  # ok requires the single canonical listener bound to the windows-mcp-server
-  # task executable AND that task report Running. A merely-existing task or an
+  # ok requires the single canonical listener to pass the bounded MCP initialize
+  # identity proof AND that task report Running. A merely-existing task or an
   # unrelated listener is not sufficient.
   $ok = $state.Listen -and $state.Identity -and $state.TaskState -eq 'Running'
   $text = "windows-mcp ok=$ok task=$($state.TaskState) listener=$($state.Listen) identity=$($state.Identity)"
@@ -159,20 +177,60 @@ function Test-WatchdogVerified($watchdog, [string]$runtime) {
   # A same-name/spoofed script path anywhere else must fail.
   $expectedScript = [IO.Path]::GetFullPath((Join-Path $runtime 'scripts\windows\watch-local-worker-queue.ps1'))
   $arguments = ([string]$action.Arguments).Trim()
-  $fileArg = $null
-  if ($arguments -match '(?i)(?:^|\s)-File\s+"([^"]+)"') { $fileArg = $Matches[1] }
-  elseif ($arguments -match '(?i)(?:^|\s)-File\s+(\S+)') { $fileArg = $Matches[1] }
-  if (-not $fileArg) { return $false }
-  $scriptPath = [IO.Path]::GetFullPath($fileArg.Trim().Trim('"'))
-  if (-not $scriptPath.Equals($expectedScript, [StringComparison]::OrdinalIgnoreCase)) { return $false }
-  # Fixed expected args: only the canonical PowerShell invocation flags and the
-  # watchdog's single -ForceRecycle switch may follow the -File script path.
-  $remaining = [regex]::Replace($arguments, '(?i)(?:^|\s)-File\s+("(?:[^"]*)"|\S+)', ' ').Trim()
-  if ($remaining) {
-    foreach ($token in @($remaining -split '\s+')) {
-      if ($token -notin @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-ForceRecycle')) { return $false }
+  if (-not $arguments) { return $false }
+
+  # Tokenize the action arguments, preserving double-quoted values.
+  $tokens = [System.Collections.Generic.List[string]]::new()
+  $i = 0
+  while ($i -lt $arguments.Length) {
+    while ($i -lt $arguments.Length -and [string]::IsNullOrWhiteSpace($arguments[$i])) { $i++ }
+    if ($i -ge $arguments.Length) { break }
+    $sb = [System.Text.StringBuilder]::new()
+    $inQuote = $false
+    while ($i -lt $arguments.Length) {
+      $ch = $arguments[$i]
+      if ($ch -eq '"') { $inQuote = -not $inQuote; $i++; continue }
+      if (-not $inQuote -and [string]::IsNullOrWhiteSpace($ch)) { break }
+      [void]$sb.Append($ch); $i++
     }
+    $tokens.Add($sb.ToString())
   }
+
+  # Locate -File and its single script argument.
+  $fileIdx = -1
+  for ($k = 0; $k -lt $tokens.Count; $k++) {
+    if ($tokens[$k] -ieq '-File') { $fileIdx = $k; break }
+  }
+  if ($fileIdx -lt 0 -or $fileIdx + 1 -ge $tokens.Count) { return $false }
+  $fileRaw = $tokens[$fileIdx + 1].Trim().Trim('"')
+
+  # A relative -File resolves against the already-verified canonical runtime (the
+  # watchdog's own WorkingDirectory), NOT the Trigger process current directory.
+  # An absolute -File is acceptable only if it resolves exactly to the same path.
+  if ([IO.Path]::IsPathRooted($fileRaw)) {
+    $candidate = [IO.Path]::GetFullPath($fileRaw)
+  } else {
+    $candidate = [IO.Path]::GetFullPath((Join-Path $workingDirectory $fileRaw))
+  }
+  if (-not $candidate.Equals($expectedScript, [StringComparison]::OrdinalIgnoreCase)) { return $false }
+
+  # Pin the exact canonical pre-File vector: -NoLogo -NoProfile -NonInteractive
+  # -ExecutionPolicy Bypass, in that order, before -File. No other switches.
+  $canonicalPre = @('-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass')
+  if ($fileIdx -ne $canonicalPre.Count) { return $false }
+  for ($j = 0; $j -lt $canonicalPre.Count; $j++) {
+    if (-not $tokens[$j].Equals($canonicalPre[$j], [StringComparison]::OrdinalIgnoreCase)) { return $false }
+  }
+
+  # After the script only a single bounded -ForceRecycle switch is permitted; any
+  # arbitrary extra argument fails closed.
+  $forceCount = 0
+  for ($p = $fileIdx + 2; $p -lt $tokens.Count; $p++) {
+    if ($tokens[$p] -ieq '-ForceRecycle') { $forceCount++; continue }
+    return $false
+  }
+  if ($forceCount -gt 1) { return $false }
+
   return $true
 }
 

@@ -17,6 +17,64 @@ function extractHere(name) {
 const windowsMcp = extractHere('windowsMcpBody');
 const queue = extractHere('queueBody');
 
+// Faithful mirror of the PS Test-WatchdogVerified rules. Inputs mirror the
+// scheduled-task fields: Execute, the task's own WorkingDirectory, the separately
+// verified canonical runtime, and the action Arguments. Windows-style path
+// normalization is used so the assertions hold on any host (Linux included).
+const CANONICAL_PRE = ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass'];
+
+function normalize(p) {
+  return p.replace(/\//g, '\\').replace(/\\+$/, '');
+}
+
+// Tokenize a PS-ish argument string, preserving double-quoted values.
+function tokenize(s) {
+  const out = [];
+  let i = 0;
+  while (i < s.length) {
+    while (i < s.length && /\s/.test(s[i])) i++;
+    if (i >= s.length) break;
+    let buf = '';
+    let inQuote = false;
+    while (i < s.length) {
+      const ch = s[i];
+      if (ch === '"') { inQuote = !inQuote; i++; continue; }
+      if (!inQuote && /\s/.test(ch)) break;
+      buf += ch; i++;
+    }
+    out.push(buf);
+  }
+  return out;
+}
+
+function mirrorWatchdog(execute, taskWorkingDir, verifiedRuntime, argStr) {
+  const runtime = normalize(verifiedRuntime);
+  if (normalize(execute) !== 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe') return false;
+  // The task's own WorkingDirectory must equal the verified canonical runtime.
+  if (normalize(taskWorkingDir) !== runtime) return false;
+  const expectedScript = normalize(`${runtime}\\scripts\\windows\\watch-local-worker-queue.ps1`);
+  const tokens = tokenize(argStr);
+  const fileIdx = tokens.findIndex((t) => t.toLowerCase() === '-file');
+  if (fileIdx < 0 || fileIdx + 1 >= tokens.length) return false;
+  const fileRaw = tokens[fileIdx + 1].trim().replace(/^"|"$/g, '');
+  const candidate =
+    /^[A-Za-z]:[\\/]/.test(fileRaw) || /^\\\\/.test(fileRaw)
+      ? normalize(fileRaw)
+      : normalize(`${runtime}\\${fileRaw}`);
+  if (candidate.toLowerCase() !== expectedScript.toLowerCase()) return false;
+  if (fileIdx !== CANONICAL_PRE.length) return false;
+  for (let j = 0; j < CANONICAL_PRE.length; j++) {
+    if (tokens[j].toLowerCase() !== CANONICAL_PRE[j].toLowerCase()) return false;
+  }
+  let force = 0;
+  for (let p = fileIdx + 2; p < tokens.length; p++) {
+    if (tokens[p].toLowerCase() === '-forcerecycle') { force++; continue; }
+    return false;
+  }
+  if (force > 1) return false;
+  return true;
+}
+
 const ALLOWED_ACTIONS = /\[ValidateSet\('status','recover'\)\]/;
 
 test('both embedded scripts accept only status|recover', () => {
@@ -133,15 +191,20 @@ test('poller postcondition fails closed: fresh unrelated audit row must not prov
   assert.doesNotMatch(queue, /allowedAuditDecisions = @\([^)]*'FAILED'[^)]*\)/);
 });
 
-test('windows mcp identity binds listener owner to the canonical task executable by exact PID', () => {
-  // Regression (review 5036088324, HIGH): 127.0.0.1:8000 alone must not be
-  // enough. Identity must be bound by exact-PID inspection to the expected
-  // windows-mcp-server task executable, with no broad process enumeration.
+test('windows mcp identity is a bounded MCP initialize protocol proof, not process-path equality', () => {
+  // Regression (CERBERUS FINAL): the official CursorTouch Windows-MCP install
+  // registers the `windows-mcp-server` task whose action launches a wrapper
+  // (~/.windows-mcp/start-server.cmd) that re-execs `python -m windows_mcp
+  // serve`. The process owning 127.0.0.1:8000 is therefore a python child, NOT
+  // the task action path, so process-path equality would reject a healthy
+  // official install. Identity must instead be proven by a single bounded MCP
+  // initialize handshake naming the canonical server ("windows-mcp").
   assert.match(windowsMcp, /Get-ScheduledTask -TaskName 'windows-mcp-server'/);
-  assert.match(windowsMcp, /\$expectedExe = \[IO\.Path\]::GetFullPath/);
-  assert.match(windowsMcp, /@\(\$task\.Actions\)\[0\]\.Execute/);
-  assert.match(windowsMcp, /Get-Process -Id \$ownerPid/);
-  assert.match(windowsMcp, /\$procPath\.Equals\(\$expectedExe, \[StringComparison\]::OrdinalIgnoreCase\)/);
+  assert.match(windowsMcp, /"method":"initialize"/);
+  assert.match(windowsMcp, /serverInfo/);
+  assert.match(windowsMcp, /\$name -eq 'windows-mcp'/);
+  assert.doesNotMatch(windowsMcp, /Get-Process -Id \$ownerPid/);
+  assert.doesNotMatch(windowsMcp, /\$procPath\.Equals/);
   assert.doesNotMatch(windowsMcp, /Get-CimInstance/i);
   assert.doesNotMatch(windowsMcp, /Win32_Process/i);
   // ok requires the canonical task to be Running, not merely present.
@@ -157,14 +220,65 @@ test('watchdog task identity requires canonical WorkingDirectory, exact script p
   assert.match(queue, /\$workingDirectory\.Equals\(\$runtime, \[StringComparison\]::OrdinalIgnoreCase\)/);
   // Exact checked-in script path bound to the runtime.
   assert.match(queue, /scripts\\windows\\watch-local-worker-queue\.ps1/);
-  assert.match(queue, /\$scriptPath\.Equals\(\$expectedScript, \[StringComparison\]::OrdinalIgnoreCase\)/);
-  // Fixed expected args: only canonical PowerShell invocation flags and -ForceRecycle.
-  assert.match(queue, /notin @\('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-ForceRecycle'\)\)/);
-  // The runtime is resolved before watchdog verification in recover.
+  assert.match(queue, /\$candidate\.Equals\(\$expectedScript, \[StringComparison\]::OrdinalIgnoreCase\)/);
+  // A relative -File must resolve against the canonical WorkingDirectory, NOT the
+  // Trigger process current directory (CERBERUS FINAL false-negative: the real
+  // canonical watchdog task uses a relative -File).
+  assert.match(queue, /\[IO\.Path\]::IsPathRooted\(\$fileRaw\)/);
+  assert.match(queue, /Join-Path \$workingDirectory \$fileRaw/);
+  // Fixed args: pins the exact canonical pre-File vector, in order.
+  assert.match(queue, /\$canonicalPre = @\('-NoLogo'/);
+  assert.match(queue, /'-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass'\)/);
+  assert.match(queue, /\$tokens\[\$j\]\.Equals\(\$canonicalPre\[\$j\]/);
+  // Post-File: only a single bounded -ForceRecycle switch is permitted.
+  assert.match(queue, /-ForceRecycle/);
+  assert.match(queue, /\$forceCount -gt 1\) \{ return \$false \}/);
+  // The runtime is resolved before canonical verification in run.
   assert.match(queue, /\$runtime = Get-CanonicalRuntime/);
   assert.match(queue, /Test-WatchdogVerified \$watchdog -runtime \$runtime/);
 });
 
+test('watchdog canonical task string (relative -File + -NoLogo + canonical WorkingDirectory) verifies true', () => {
+  // Regression (CERBERUS FINAL): the REAL canonical watchdog task defined by
+  // ai-orchestrator@11855d88 install-local-queue-self-heal.ps1 is exactly:
+  //   $watchdogArguments = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "scripts\Windows\watch-local-worker-queue.ps1"'
+  //   New-ScheduledTaskAction -Execute $powershell -Argument $watchdogArguments -WorkingDirectory $runtime
+  // With WorkingDirectory = the verified runtime, a relative -File resolved against
+  // it plus the pinned `-NoLogo` pre-vector must prove identity TRUE.
+  const execute = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
+  const runtime = 'C:\\repo\\_jarvis-local-queue-runtime';
+  const canonicalArgs =
+    '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "scripts\\windows\\watch-local-worker-queue.ps1"';
+  // Task WorkingDirectory == verified runtime, relative -File + canonical -NoLogo vector => TRUE.
+  assert.equal(mirrorWatchdog(execute, runtime, runtime, canonicalArgs), true, 'canonical task string must verify');
+  // The same vector with the optional bounded -ForceRecycle switch must also pass.
+  assert.equal(
+    mirrorWatchdog(execute, runtime, runtime, canonicalArgs + ' -ForceRecycle'),
+    true,
+    'bounded -ForceRecycle post-File is permitted',
+  );
+});
+
+test('watchdog negative: same relative filename with a different WorkingDirectory or extra arg fails false', () => {
+  const execute = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
+  const runtime = 'C:\\repo\\_jarvis-local-queue-runtime';
+  const canonicalArgs =
+    '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "scripts\\windows\\watch-local-worker-queue.ps1"';
+  // Same relative target, but the task's WorkingDirectory differs from the verified
+  // runtime: the task's own WorkingDirectory is OUTSIDE the canonical runtime.
+  const outsideRuntime = 'C:\\other\\_jarvis-local-queue-runtime';
+  assert.equal(
+    mirrorWatchdog(execute, outsideRuntime, runtime, canonicalArgs),
+    false,
+    'task WorkingDirectory outside the verified runtime must fail closed',
+  );
+  // A missing canonical flag must fail.
+  const missingNoLogo = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "scripts\\windows\\watch-local-worker-queue.ps1"';
+  assert.equal(mirrorWatchdog(execute, runtime, runtime, missingNoLogo), false, 'missing -NoLogo must fail closed');
+  // An unexpected extra argument after -File must fail (only -ForceRecycle is allowed).
+  const extraArg = canonicalArgs + ' -bogus';
+  assert.equal(mirrorWatchdog(execute, runtime, runtime, extraArg), false, 'unexpected extra arg must fail closed');
+});
 test('parent provisions exactly two commands and retires Jarvis Control idempotently', () => {
   // The retire filter lists all canonical/legacy triggers.
   assert.match(
