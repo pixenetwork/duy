@@ -25,6 +25,8 @@ $sendResult = Join-Path $dataDir 'SendResult.bat'
 $listenerAddress = '127.0.0.1'
 $listenerPort = 8000
 $maxResponseBytes = 262144
+$httpTimeoutMs = 500
+$sseReadTimeoutMs = 500
 
 function Send-Result {
   param([string]$Text)
@@ -109,7 +111,7 @@ function Get-McpServerName {
   $reader = $null
   try {
     $client = [System.Net.Http.HttpClient]::new()
-    $client.Timeout = [TimeSpan]::FromSeconds(6)
+    $client.Timeout = [TimeSpan]::FromMilliseconds($httpTimeoutMs)
     $client.DefaultRequestHeaders.Accept.Clear()
     $client.DefaultRequestHeaders.Accept.Add([System.Net.Http.Headers.MediaTypeWithQualityHeaderValue]::new('application/json'))
     $client.DefaultRequestHeaders.Accept.Add([System.Net.Http.Headers.MediaTypeWithQualityHeaderValue]::new('text/event-stream'))
@@ -122,7 +124,7 @@ function Get-McpServerName {
     $mediaType = if ($resp.Content.Headers.ContentType) { [string]$resp.Content.Headers.ContentType.MediaType } else { '' }
     if ($mediaType -eq 'application/json') {
       $bytesTask = $resp.Content.ReadAsByteArrayAsync()
-      $delayTask = [System.Threading.Tasks.Task]::Delay(5000)
+      $delayTask = [System.Threading.Tasks.Task]::Delay($sseReadTimeoutMs)
       $waitTasks = [System.Threading.Tasks.Task[]]@($bytesTask, $delayTask)
       $winner = [System.Threading.Tasks.Task]::WhenAny($waitTasks).GetAwaiter().GetResult()
       if ($winner.Id -ne $bytesTask.Id) { return $null }
@@ -135,7 +137,7 @@ function Get-McpServerName {
       $streamTask = $resp.Content.ReadAsStreamAsync()
       $stream = $streamTask.GetAwaiter().GetResult()
       $reader = [System.IO.StreamReader]::new($stream, [System.Text.Encoding]::UTF8, $true, 1024, $false)
-      return Read-McpSseServerName -Reader $reader -Deadline (Get-Date).AddSeconds(5)
+      return Read-McpSseServerName -Reader $reader -Deadline (Get-Date).AddMilliseconds($sseReadTimeoutMs)
     }
 
     return $null
@@ -159,7 +161,7 @@ function Get-McpLegacySseServerName {
   $postResp = $null
   try {
     $client = [System.Net.Http.HttpClient]::new()
-    $client.Timeout = [TimeSpan]::FromSeconds(6)
+    $client.Timeout = [TimeSpan]::FromMilliseconds($httpTimeoutMs)
     $request = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Get, 'http://127.0.0.1:8000/sse')
     $request.Headers.Accept.Add([System.Net.Http.Headers.MediaTypeWithQualityHeaderValue]::new('text/event-stream'))
     $resp = $client.SendAsync($request, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
@@ -169,7 +171,7 @@ function Get-McpLegacySseServerName {
 
     $stream = $resp.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
     $reader = [System.IO.StreamReader]::new($stream, [System.Text.Encoding]::UTF8, $true, 1024, $false)
-    $deadline = (Get-Date).AddSeconds(5)
+    $deadline = (Get-Date).AddMilliseconds($sseReadTimeoutMs)
     $endpointText = $null
     while ((Get-Date) -lt $deadline) {
       $event = Read-McpSseEvent -Reader $reader -Deadline $deadline
@@ -198,7 +200,7 @@ function Get-McpLegacySseServerName {
     $postResp = $client.SendAsync($post, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
     if (-not $postResp.IsSuccessStatusCode) { return $null }
 
-    $deadline = (Get-Date).AddSeconds(5)
+    $deadline = (Get-Date).AddMilliseconds($sseReadTimeoutMs)
     while ((Get-Date) -lt $deadline) {
       $event = Read-McpSseEvent -Reader $reader -Deadline $deadline
       if (-not $event) { return $null }
@@ -256,17 +258,13 @@ try {
     try { Start-ScheduledTask -TaskName 'windows-mcp-server' -ErrorAction Stop | Out-Null }
     catch { $failCode = 'mcp-task-start-failed'; throw $failCode }
 
-    $deadline = (Get-Date).AddSeconds(20)
-    $ready = $false
-    do {
-      Start-Sleep -Milliseconds 500
-      $state = Get-McpState
-      $ready = ($state.Listen -and $state.Identity -and $state.TaskState -eq 'Running')
-    } while (-not $ready -and (Get-Date) -lt $deadline)
+    Start-Sleep -Milliseconds 200
+    $state = Get-McpState
+    $ready = ($state.Listen -and $state.Identity -and $state.TaskState -eq 'Running')
     if (-not $ready) { $failCode = 'mcp-health-not-ready'; throw $failCode }
   }
 
-  $state = Get-McpState
+  if (-not $state) { $state = Get-McpState }
   $ok = $state.Listen -and $state.Identity -and $state.TaskState -eq 'Running'
   $text = "windows-mcp ok=$ok task=$($state.TaskState) listener=$($state.Listen) identity=$($state.Identity) transport=$($state.Transport)"
   Send-Result $text
