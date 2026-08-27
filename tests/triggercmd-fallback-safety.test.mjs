@@ -211,6 +211,26 @@ test('windows mcp identity is a bounded MCP initialize protocol proof, not proce
   assert.match(windowsMcp, /\$state\.TaskState -eq 'Running'/);
 });
 
+test('windows mcp probe endpoint is a fixed absolute loopback HTTP URI', () => {
+  // Regression (P0 ONE-LINE RUNTIME BLOCKER): the probe URI was built as
+  // "$listenerAddress:`$listenerPort/mcp/" with no scheme and no HttpClient
+  // BaseAddress. .NET treats that as a non-absolute URI, so the catch swallowed
+  // the request and returned $null, leaving Identity false even against a healthy
+  // Windows-MCP server. The endpoint must be a fixed absolute loopback HTTP URI,
+  // never assembled from caller-controlled parts.
+  assert.doesNotMatch(windowsMcp, /PostAsync\("\$/);
+  const post = windowsMcp.match(/PostAsync\(([^,]+),/);
+  assert.ok(post, 'PostAsync must be present');
+  const uriArg = post[1].replace(/^'|'$/g, '').trim();
+  assert.equal(uriArg, 'http://127.0.0.1:8000/mcp/', 'probe endpoint must be the fixed absolute loopback HTTP URI');
+  assert.match(windowsMcp, /PostAsync\('http:\/\/127\.0\.0\.1:8000\/mcp\/'/);
+  // No caller-controlled host/port variable is interpolated into the request URI.
+  assert.doesNotMatch(windowsMcp, /PostAsync\([^)]*\$listenerAddress/);
+  assert.doesNotMatch(windowsMcp, /PostAsync\([^)]*\$listenerPort/);
+  // The literal port variable (used only for the local listener probe) is kept.
+  assert.match(windowsMcp, /\$listenerPort = 8000/);
+});
+
 test('watchdog task identity requires canonical WorkingDirectory, exact script path, and fixed args', () => {
   // Regression (review 5036088324, HIGH): a same-name/spoofed watchdog script
   // path must fail. Identity must bind canonical WorkingDirectory to the runtime,

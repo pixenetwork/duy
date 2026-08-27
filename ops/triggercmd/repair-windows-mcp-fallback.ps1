@@ -39,6 +39,10 @@ function Send-Result {
 # 127.0.0.1 listener to the exact canonical FastMCP server name ("windows-mcp")
 # by running a single bounded MCP `initialize` exchange; an unrelated listener
 # that does not speak the MCP protocol with that exact server identity fails.
+# The probe endpoint is a FIXED absolute loopback HTTP URI (never caller-controlled):
+# a bare "127.0.0.1:8000/mcp/" has no scheme and no BaseAddress, so .NET treats it
+# as non-absolute and the catch would return $null, leaving Identity false even
+# against a healthy Windows-MCP server.
 function Get-McpServerName {
   $payload = '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"jarvis-ops","version":"1"}}}'
   try {
@@ -46,7 +50,7 @@ function Get-McpServerName {
     try {
       $client.Timeout = [TimeSpan]::FromSeconds(5)
       $content = [System.Net.Http.StringContent]::new($payload, [System.Text.Encoding]::UTF8, 'application/json')
-      $resp = $client.PostAsync("$listenerAddress`:$listenerPort/mcp/", $content).GetAwaiter().GetResult()
+      $resp = $client.PostAsync('http://127.0.0.1:8000/mcp/', $content).GetAwaiter().GetResult()
       if (-not $resp.IsSuccessStatusCode) { return $null }
       $bytes = $resp.Content.ReadAsByteArrayAsync().GetAwaiter().GetResult()
       if ($bytes.Length -gt 262144) { return $null }
