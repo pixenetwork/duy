@@ -44,12 +44,14 @@ function Get-McpServerNameFromJson {
   return [string]$data.result.serverInfo.name
 }
 
-function Read-McpSseServerName {
+function Read-McpSseEvent {
   param(
     [System.IO.StreamReader]$Reader,
     [datetime]$Deadline
   )
   $bytesRead = 0
+  $eventName = ''
+  $dataParts = [System.Collections.Generic.List[string]]::new()
   while ((Get-Date) -lt $Deadline) {
     $remainingMs = [int][math]::Max(1, [math]::Ceiling(($Deadline - (Get-Date)).TotalMilliseconds))
     $readTask = $Reader.ReadLineAsync()
@@ -61,10 +63,39 @@ function Read-McpSseServerName {
     if ($null -eq $line) { return $null }
     $bytesRead += [System.Text.Encoding]::UTF8.GetByteCount($line) + 1
     if ($bytesRead -gt $maxResponseBytes) { return $null }
-    if (-not $line.StartsWith('data:', [System.StringComparison]::OrdinalIgnoreCase)) { continue }
-    $json = $line.Substring(5).Trim()
-    if ([string]::IsNullOrWhiteSpace($json) -or $json -eq '[DONE]') { continue }
-    $name = Get-McpServerNameFromJson -Json $json
+
+    if ($line.Length -eq 0) {
+      if ($eventName -or $dataParts.Count -gt 0) {
+        return [pscustomobject]@{
+          Event = $eventName
+          Data = [string]::Join("`n", $dataParts)
+        }
+      }
+      continue
+    }
+    if ($line.StartsWith(':')) { continue }
+    if ($line.StartsWith('event:', [System.StringComparison]::OrdinalIgnoreCase)) {
+      $eventName = $line.Substring(6).Trim()
+      continue
+    }
+    if ($line.StartsWith('data:', [System.StringComparison]::OrdinalIgnoreCase)) {
+      $dataParts.Add($line.Substring(5).Trim())
+    }
+  }
+  return $null
+}
+
+function Read-McpSseServerName {
+  param(
+    [System.IO.StreamReader]$Reader,
+    [datetime]$Deadline
+  )
+  while ((Get-Date) -lt $Deadline) {
+    $event = Read-McpSseEvent -Reader $Reader -Deadline $Deadline
+    if (-not $event) { return $null }
+    if ($event.Event -and $event.Event -ne 'message') { continue }
+    if ([string]::IsNullOrWhiteSpace([string]$event.Data) -or [string]$event.Data -eq '[DONE]') { continue }
+    $name = Get-McpServerNameFromJson -Json ([string]$event.Data)
     if ($name) { return $name }
   }
   return $null
@@ -118,22 +149,70 @@ function Get-McpServerName {
   }
 }
 
-function Test-McpSseEndpoint {
+function Get-McpLegacySseServerName {
+  $payload = '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"jarvis-ops","version":"1"}}}'
   $client = $null
   $request = $null
   $resp = $null
+  $reader = $null
+  $post = $null
+  $postResp = $null
   try {
     $client = [System.Net.Http.HttpClient]::new()
-    $client.Timeout = [TimeSpan]::FromSeconds(5)
+    $client.Timeout = [TimeSpan]::FromSeconds(6)
     $request = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Get, 'http://127.0.0.1:8000/sse')
     $request.Headers.Accept.Add([System.Net.Http.Headers.MediaTypeWithQualityHeaderValue]::new('text/event-stream'))
     $resp = $client.SendAsync($request, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
-    if (-not $resp.IsSuccessStatusCode) { return $false }
+    if (-not $resp.IsSuccessStatusCode) { return $null }
     $mediaType = if ($resp.Content.Headers.ContentType) { [string]$resp.Content.Headers.ContentType.MediaType } else { '' }
-    return ($mediaType -eq 'text/event-stream')
+    if ($mediaType -ne 'text/event-stream') { return $null }
+
+    $stream = $resp.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
+    $reader = [System.IO.StreamReader]::new($stream, [System.Text.Encoding]::UTF8, $true, 1024, $false)
+    $deadline = (Get-Date).AddSeconds(5)
+    $endpointText = $null
+    while ((Get-Date) -lt $deadline) {
+      $event = Read-McpSseEvent -Reader $reader -Deadline $deadline
+      if (-not $event) { return $null }
+      if ([string]$event.Event -eq 'endpoint') {
+        $endpointText = ([string]$event.Data).Trim()
+        break
+      }
+    }
+    if ([string]::IsNullOrWhiteSpace($endpointText)) { return $null }
+
+    try {
+      $baseUri = [System.Uri]::new('http://127.0.0.1:8000/')
+      $endpointUri = [System.Uri]::new($baseUri, $endpointText)
+    } catch {
+      return $null
+    }
+    if ($endpointUri.Scheme -ne 'http') { return $null }
+    if ($endpointUri.Host -ne '127.0.0.1') { return $null }
+    if ($endpointUri.Port -ne 8000) { return $null }
+    if ($endpointUri.AbsolutePath -notin @('/messages','/messages/')) { return $null }
+    if ($endpointUri.UserInfo -or $endpointUri.Fragment) { return $null }
+
+    $post = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Post, $endpointUri)
+    $post.Content = [System.Net.Http.StringContent]::new($payload, [System.Text.Encoding]::UTF8, 'application/json')
+    $postResp = $client.SendAsync($post, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
+    if (-not $postResp.IsSuccessStatusCode) { return $null }
+
+    $deadline = (Get-Date).AddSeconds(5)
+    while ((Get-Date) -lt $deadline) {
+      $event = Read-McpSseEvent -Reader $reader -Deadline $deadline
+      if (-not $event) { return $null }
+      if ($event.Event -and $event.Event -ne 'message') { continue }
+      $name = Get-McpServerNameFromJson -Json ([string]$event.Data)
+      if ($name) { return $name }
+    }
+    return $null
   } catch {
-    return $false
+    return $null
   } finally {
+    if ($postResp) { $postResp.Dispose() }
+    if ($post) { $post.Dispose() }
+    if ($reader) { $reader.Dispose() }
     if ($resp) { $resp.Dispose() }
     if ($request) { $request.Dispose() }
     if ($client) { $client.Dispose() }
@@ -152,9 +231,12 @@ function Get-McpState {
     if ($name -eq 'windows-mcp') {
       $identity = $true
       $transport = 'streamable-http'
-    } elseif (Test-McpSseEndpoint) {
-      $identity = $true
-      $transport = 'sse'
+    } else {
+      $legacyName = Get-McpLegacySseServerName
+      if ($legacyName -eq 'windows-mcp') {
+        $identity = $true
+        $transport = 'sse'
+      }
     }
   }
 
