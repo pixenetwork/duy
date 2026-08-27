@@ -64,3 +64,13 @@ test('overlay preserves fixed-command retirement and does not add a generic shel
   assert.doesNotMatch(overlay, /Invoke-Command|WinRM|psexec/i);
   assert.doesNotMatch(overlay, /token\.tkn/i);
 });
+test('Trigger-facing status and recover fit inside the SendResult reply window', () => {
+  const windowsMcp = loadWindowsMcpBody();
+  assert.match(windowsMcp, /\$httpTimeoutMs = 500/);
+  assert.match(windowsMcp, /\$sseReadTimeoutMs = 500/);
+  assert.doesNotMatch(windowsMcp, /FromSeconds\((?:5|6)\)/);
+  assert.doesNotMatch(windowsMcp, /AddSeconds\((?:5|20)\)/);
+  assert.match(windowsMcp, /Start-Sleep -Milliseconds 200/);
+  assert.doesNotMatch(windowsMcp, /do \{[\s\S]{0,3000}while \(-not \$ready/);
+  assert.match(windowsMcp, /mcp-health-not-ready/);
+});
