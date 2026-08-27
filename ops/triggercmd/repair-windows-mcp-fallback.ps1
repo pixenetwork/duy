@@ -180,14 +180,41 @@ function Get-MonitoredQueue([string]$runtime) {
     $tail = @(Get-Content -LiteralPath $pollerAuditPath -Tail 200 -ErrorAction SilentlyContinue)
     if ($tail.Count -gt 0) {
       try { $row = $tail[$tail.Count - 1] | ConvertFrom-Json -ErrorAction Stop } catch { $row = $null }
-      $atStamp = $epoch
-      if ($row -and [datetime]::TryParse([string]$row.at, [ref]$atStamp)) {
-        $atStamp = $atStamp.ToUniversalTime()
-        $pollerAge = ((Get-Date).ToUniversalTime() - $atStamp).TotalSeconds
-        $auditAge = [math]::Round($pollerAge, 0)
-        $auditPresent = $true
-        $auditFresh = ($pollerAge -ge -30 -and $pollerAge -le $pollerMaxAgeSeconds)
+      if ($row) {
+        # audit-log.mjs stores 'at' as Date.now() numeric Unix milliseconds
+        # (stored = { ...redacted, at: now, sequence }). Parse bounded numeric
+        # milliseconds and convert from the Unix epoch; malformed/future/stale
+        # values fail closed (auditFresh stays false).
+        $atMs = [long]0
+        if ([long]::TryParse(([string]$row.at).Trim(), [ref]$atMs)) {
+          # Bound to the Unix epoch between year 2000 and year 9999 inclusive;
+          # values outside that window are malformed/future and fail closed.
+          if ($atMs -ge 946684800000 -and $atMs -le 253402300799999) {
+            try {
+              $atStamp = $epoch.AddMilliseconds([double]$atMs)
+              $pollerAge = ((Get-Date).ToUniversalTime() - $atStamp.ToUniversalTime()).TotalSeconds
+              $auditAge = [math]::Round($pollerAge, 0)
+              $auditPresent = $true
+              $auditFresh = ($pollerAge -ge -30 -and $pollerAge -le $pollerMaxAgeSeconds)
+            } catch {
+              $auditPresent = $false
+            }
+          }
+        }
       }
+    }
+  }
+
+  # Exact source-head match: heartbeat sourceHead must equal the .jarvis-source-head
+  # runtime marker verbatim. Recovery and status fail closed unless they match.
+  $headMatch = $false
+  $headPath = Join-Path $runtime $sourceHeadRelativePath
+  if (Test-Path -LiteralPath $headPath -PathType Leaf) {
+    try {
+      $markerHead = (Get-Content -LiteralPath $headPath -Raw).Trim()
+      $headMatch = ($heartbeatPresent -and -not [string]::IsNullOrEmpty($markerHead) -and $heartbeatHead -eq $markerHead)
+    } catch {
+      $headMatch = $false
     }
   }
 
@@ -201,6 +228,7 @@ function Get-MonitoredQueue([string]$runtime) {
     HeartbeatState = $heartbeatState
     HeartbeatHead = $heartbeatHead
     HeartbeatAge = $heartbeatAge
+    HeadMatch = $headMatch
     PollerPresent = $auditPresent
     PollerFresh = $auditFresh
     PollerAge = $auditAge
@@ -219,7 +247,9 @@ try {
     try { Start-ScheduledTask -TaskName $watchdogTaskName -ErrorAction Stop | Out-Null }
     catch { $fail = 'watchdog-start-failed'; throw $fail }
 
-    # Bounded wait; require a fresh managed-queue heartbeat AND fresh poller postcondition.
+    # Bounded wait; require canonical identity AND a fresh managed-queue heartbeat
+    # (with heartbeat sourceHead exactly matching the runtime marker) AND a fresh
+    # poller postcondition before declaring recovery.
     $recovered = $false
     $startUtc = (Get-Date).ToUniversalTime().AddSeconds(-5)
     $deadline = (Get-Date).AddSeconds(90)
@@ -227,8 +257,6 @@ try {
       try {
         $runtime = Get-CanonicalRuntime
         $s = Get-MonitoredQueue -runtime $runtime
-        $headPath = Join-Path $runtime $sourceHeadRelativePath
-        $headOk = (Test-Path -LiteralPath $headPath -PathType Leaf) -and ((Get-Content -LiteralPath $headPath -Raw).Trim()) -ne ''
         $heartbeatNewEnough = $false
         if ($s.HeartbeatFresh) {
           $hbPath = Join-Path $runtime $heartbeatRelativePath
@@ -238,7 +266,7 @@ try {
             $heartbeatNewEnough = $stamp.ToUniversalTime() -ge $startUtc
           }
         }
-        if ($headOk -and $heartbeatNewEnough -and $s.PollerFresh) {
+        if ($s.HeadMatch -and $heartbeatNewEnough -and $s.PollerFresh) {
           $recovered = $true
           break
         }
@@ -253,9 +281,21 @@ try {
 
   $runtime = Get-CanonicalRuntime
   $state = Get-MonitoredQueue -runtime $runtime
-  $text = "jarvis-queue ok=$true queueTask=$($state.QueueTask) watchdogTask=$($state.WatchdogTask) watchdogVerified=$($state.WatchdogVerified) listener=$($state.Listening) heartbeat=$($state.HeartbeatFresh) hbState=$($state.HeartbeatState) hbAge=$($state.HeartbeatAge)s poller=$($state.PollerFresh) pollerAge=$($state.PollerAge)s"
+  # ok is derived, never unconditional: it requires canonical identity
+  # (queue/watchdog task verified by Get-CanonicalRuntime + watchdog check),
+  # the queue listener present, a fresh heartbeat, heartbeat sourceHead exact
+  # match with the runtime marker, and a fresh poller postcondition.
+  $ok = ($state.WatchdogVerified -and
+    $state.QueueTask -notin @('Missing','Disabled') -and
+    $state.WatchdogTask -notin @('Missing','Disabled') -and
+    $state.Listening -and
+    $state.HeartbeatFresh -and
+    $state.HeadMatch -and
+    $state.PollerFresh)
+  $text = "jarvis-queue ok=$ok queueTask=$($state.QueueTask) watchdogTask=$($state.WatchdogTask) watchdogVerified=$($state.WatchdogVerified) listener=$($state.Listening) heartbeat=$($state.HeartbeatFresh) hbState=$($state.HeartbeatState) hbAge=$($state.HeartbeatAge)s headMatch=$($state.HeadMatch) poller=$($state.PollerFresh) pollerAge=$($state.PollerAge)s"
   Send-Result $text
   Write-Output $text
+  if (-not $ok) { exit 2 }
   exit 0
 }
 catch {
