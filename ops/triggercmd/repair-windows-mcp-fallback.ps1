@@ -33,14 +33,26 @@ function Send-Result {
 function Get-McpState {
   $task = Get-ScheduledTask -TaskName 'windows-mcp-server' -ErrorAction SilentlyContinue
   $taskState = if ($task) { [string]$task.State } else { 'Missing' }
-  # Exact bounded identity: the single 127.0.0.1 listener and its owning PID.
-  # No arbitrary process command-line enumeration.
+  # Exact bounded Windows-MCP identity: derive the expected executable solely
+  # from the single action of the canonical windows-mcp-server task, then bind
+  # the 127.0.0.1 listener to it by exact-PID inspection. No arbitrary process
+  # command-line enumeration; an unrelated listener can never satisfy identity.
+  $expectedExe = ''
+  if ($task -and @($task.Actions).Count -eq 1) {
+    $expectedExe = [IO.Path]::GetFullPath(([string]@($task.Actions)[0].Execute).Trim())
+  }
   $listener = Get-NetTCPConnection -State Listen -LocalAddress $listenerAddress -LocalPort $listenerPort -ErrorAction SilentlyContinue | Select-Object -First 1
   $identity = $false
-  if ($listener) {
+  if ($listener -and -not [string]::IsNullOrWhiteSpace($expectedExe)) {
     $ownerPid = 0
-    if ([int]::TryParse([string]$listener.OwningProcess, [ref]$ownerPid)) {
-      $identity = [bool](Get-Process -Id $ownerPid -ErrorAction SilentlyContinue)
+    if ([int]::TryParse([string]$listener.OwningProcess, [ref]$ownerPid) -and $ownerPid -gt 0) {
+      $proc = Get-Process -Id $ownerPid -ErrorAction SilentlyContinue
+      try {
+        $procPath = [IO.Path]::GetFullPath([string]$proc.Path)
+        $identity = $procPath.Equals($expectedExe, [StringComparison]::OrdinalIgnoreCase)
+      } catch {
+        $identity = $false
+      }
     }
   }
   [pscustomobject]@{
@@ -66,7 +78,10 @@ try {
     if (-not $listener) { $failCode = 'mcp-listener-not-ready'; throw $failCode }
   }
   $state = Get-McpState
-  $ok = $state.Listen -and $state.Identity -and $state.TaskState -ne 'Missing'
+  # ok requires the single canonical listener bound to the windows-mcp-server
+  # task executable AND that task report Running. A merely-existing task or an
+  # unrelated listener is not sufficient.
+  $ok = $state.Listen -and $state.Identity -and $state.TaskState -eq 'Running'
   $text = "windows-mcp ok=$ok task=$($state.TaskState) listener=$($state.Listen) identity=$($state.Identity)"
   Send-Result $text
   Write-Output $text
@@ -129,7 +144,7 @@ function Get-CanonicalRuntime {
   return $runtime
 }
 
-function Test-WatchdogVerified($watchdog) {
+function Test-WatchdogVerified($watchdog, [string]$runtime) {
   if (-not $watchdog) { return $false }
   if (@($watchdog.Actions).Count -ne 1) { return $false }
   if ([string]$watchdog.Principal.UserId -notmatch '(?i)NETWORK SERVICE$') { return $false }
@@ -137,7 +152,27 @@ function Test-WatchdogVerified($watchdog) {
   $exe = [IO.Path]::GetFullPath(([string]$action.Execute).Trim())
   $expectedPowershell = [IO.Path]::GetFullPath((Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'))
   if (-not $exe.Equals($expectedPowershell, [StringComparison]::OrdinalIgnoreCase)) { return $false }
-  if (([string]$action.Arguments) -notmatch 'watch-local-worker-queue\.ps1') { return $false }
+  # Canonical WorkingDirectory must equal the verified queue runtime exactly.
+  $workingDirectory = [IO.Path]::GetFullPath(([string]$action.WorkingDirectory).Trim()).TrimEnd('\')
+  if (-not $workingDirectory.Equals($runtime, [StringComparison]::OrdinalIgnoreCase)) { return $false }
+  # Exact checked-in watchdog script path, bound to the verified queue runtime.
+  # A same-name/spoofed script path anywhere else must fail.
+  $expectedScript = [IO.Path]::GetFullPath((Join-Path $runtime 'scripts\windows\watch-local-worker-queue.ps1'))
+  $arguments = ([string]$action.Arguments).Trim()
+  $fileArg = $null
+  if ($arguments -match '(?i)(?:^|\s)-File\s+"([^"]+)"') { $fileArg = $Matches[1] }
+  elseif ($arguments -match '(?i)(?:^|\s)-File\s+(\S+)') { $fileArg = $Matches[1] }
+  if (-not $fileArg) { return $false }
+  $scriptPath = [IO.Path]::GetFullPath($fileArg.Trim().Trim('"'))
+  if (-not $scriptPath.Equals($expectedScript, [StringComparison]::OrdinalIgnoreCase)) { return $false }
+  # Fixed expected args: only the canonical PowerShell invocation flags and the
+  # watchdog's single -ForceRecycle switch may follow the -File script path.
+  $remaining = [regex]::Replace($arguments, '(?i)(?:^|\s)-File\s+("(?:[^"]*)"|\S+)', ' ').Trim()
+  if ($remaining) {
+    foreach ($token in @($remaining -split '\s+')) {
+      if ($token -notin @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-ForceRecycle')) { return $false }
+    }
+  }
   return $true
 }
 
@@ -146,7 +181,7 @@ function Get-MonitoredQueue([string]$runtime) {
   $watchdog = Get-ScheduledTask -TaskName $watchdogTaskName -ErrorAction SilentlyContinue
   $queueTaskState = if ($queue) { [string]$queue.State } else { 'Missing' }
   $watchdogTaskState = if ($watchdog) { [string]$watchdog.State } else { 'Missing' }
-  $watchdogVerified = Test-WatchdogVerified $watchdog
+  $watchdogVerified = Test-WatchdogVerified $watchdog -runtime $runtime
 
   $ill = Get-NetTCPConnection -State Listen -LocalAddress '127.0.0.1' -LocalPort $queuePort -ErrorAction SilentlyContinue | Select-Object -First 1
   $listening = [bool]$ill
@@ -173,34 +208,57 @@ function Get-MonitoredQueue([string]$runtime) {
     }
   }
 
+  # Canonical remote-control audit schema (ai-orchestrator src/remote-control/
+  # audit-log.mjs): each JSONL row is { ...redacted, at: <Date.now() ms>, sequence }
+  # with a canonical kind: branch-check, commit-check, schema-check, source-check,
+  # replay-check, acceptance, phase-denial, claim, terminal, receipt.
+  #
+  # A managed poll-cycle postcondition requires a bounded-tail row that is a
+  # recognized canonical record with an allowed healthy decision and (where
+  # present) well-formed correlation/source context. Any fresh unrelated row that
+  # is not a recognized postcondition fails closed (PollerFresh stays false).
+  $allowedAuditKinds = @('branch-check','commit-check','schema-check','source-check','replay-check','acceptance','phase-denial','claim','terminal','receipt')
+  $allowedAuditDecisions = @('ACCEPTED','CLAIMED','PUBLISHED','COMPLETED')
   $auditPresent = $false
   $auditFresh = $false
   $auditAge = -1
   if (Test-Path -LiteralPath $pollerAuditPath -PathType Leaf) {
+    # Scan only a bounded tail (last 200 lines); never read the whole file.
     $tail = @(Get-Content -LiteralPath $pollerAuditPath -Tail 200 -ErrorAction SilentlyContinue)
     if ($tail.Count -gt 0) {
-      try { $row = $tail[$tail.Count - 1] | ConvertFrom-Json -ErrorAction Stop } catch { $row = $null }
-      if ($row) {
+      foreach ($line in $tail) {
+        try { $row = $line | ConvertFrom-Json -ErrorAction Stop } catch { $row = $null }
+        if (-not $row) { continue }
+        # Recognized canonical kind plus an allowed healthy decision.
+        if (@($allowedAuditKinds) -notcontains [string]$row.kind) { continue }
+        if (@($allowedAuditDecisions) -notcontains ([string]$row.decision).ToUpperInvariant()) { continue }
+        # Correlation/source context where available: an audit headSha, when
+        # present, must be a well-formed 40-hex SHA; a commandId, when present,
+        # must be non-empty. Malformed context fails closed.
+        if ($null -ne $row.headSha -and [string]$row.headSha -and ([string]$row.headSha -notmatch '^[0-9a-fA-F]{40}$')) { continue }
+        if ($null -ne $row.commandId -and [string]$row.commandId -and ([string]::IsNullOrWhiteSpace([string]$row.commandId))) { continue }
         # audit-log.mjs stores 'at' as Date.now() numeric Unix milliseconds
         # (stored = { ...redacted, at: now, sequence }). Parse bounded numeric
         # milliseconds and convert from the Unix epoch; malformed/future/stale
-        # values fail closed (auditFresh stays false).
+        # values fail closed.
         $atMs = [long]0
-        if ([long]::TryParse(([string]$row.at).Trim(), [ref]$atMs)) {
-          # Bound to the Unix epoch between year 2000 and year 9999 inclusive;
-          # values outside that window are malformed/future and fail closed.
-          if ($atMs -ge 946684800000 -and $atMs -le 253402300799999) {
-            try {
-              $atStamp = $epoch.AddMilliseconds([double]$atMs)
-              $pollerAge = ((Get-Date).ToUniversalTime() - $atStamp.ToUniversalTime()).TotalSeconds
-              $auditAge = [math]::Round($pollerAge, 0)
-              $auditPresent = $true
-              $auditFresh = ($pollerAge -ge -30 -and $pollerAge -le $pollerMaxAgeSeconds)
-            } catch {
-              $auditPresent = $false
-            }
-          }
+        if (-not [long]::TryParse(([string]$row.at).Trim(), [ref]$atMs)) { continue }
+        # Bound to the Unix epoch between year 2000 and year 9999 inclusive;
+        # values outside that window are malformed/future and fail closed.
+        if ($atMs -lt 946684800000 -or $atMs -gt 253402300799999) { continue }
+        try {
+          $atStamp = $epoch.AddMilliseconds([double]$atMs)
+          $pollerAge = ((Get-Date).ToUniversalTime() - $atStamp.ToUniversalTime()).TotalSeconds
+        } catch {
+          continue
         }
+        $auditPresent = $true
+        if ($pollerAge -ge -30 -and $pollerAge -le $pollerMaxAgeSeconds) {
+          $auditFresh = $true
+          $auditAge = [math]::Round($pollerAge, 0)
+          break
+        }
+        if ($pollerAge -ge 0 -and ($auditAge -lt 0 -or $pollerAge -lt $auditAge)) { $auditAge = [math]::Round($pollerAge, 0) }
       }
     }
   }
@@ -239,17 +297,21 @@ $fail = 'none'
 try {
   if (-not (Test-ExpectedHost)) { $fail = 'host-mismatch'; throw $fail }
   if ($Action -eq 'recover') {
-    # Fail closed on the canonical watchdog task before doing anything.
+    # Fail closed on the canonical watchdog task before doing anything. The
+    # verified runtime is resolved once up front so the watchdog's WorkingDirectory
+    # and exact script path can be bound to it.
+    $runtime = Get-CanonicalRuntime
     $watchdog = Get-ScheduledTask -TaskName $watchdogTaskName -ErrorAction SilentlyContinue
     if (-not $watchdog) { $fail = 'watchdog-task-missing'; throw $fail }
-    if (-not (Test-WatchdogVerified $watchdog)) { $fail = 'watchdog-task-unverified'; throw $fail }
+    if (-not (Test-WatchdogVerified $watchdog -runtime $runtime)) { $fail = 'watchdog-task-unverified'; throw $fail }
     if ([string]$watchdog.State -eq 'Disabled') { $fail = 'watchdog-task-disabled'; throw $fail }
     try { Start-ScheduledTask -TaskName $watchdogTaskName -ErrorAction Stop | Out-Null }
     catch { $fail = 'watchdog-start-failed'; throw $fail }
 
-    # Bounded wait; require canonical identity AND a fresh managed-queue heartbeat
-    # (with heartbeat sourceHead exactly matching the runtime marker) AND a fresh
-    # poller postcondition before declaring recovery.
+    # Bounded wait — require canonical identity (with watchdog bound to the queue
+    # runtime) AND a fresh managed-queue heartbeat (with heartbeat sourceHead
+    # exactly matching the runtime marker) AND a fresh poller postcondition before
+    # declaring recovery.
     $recovered = $false
     $startUtc = (Get-Date).ToUniversalTime().AddSeconds(-5)
     $deadline = (Get-Date).AddSeconds(90)

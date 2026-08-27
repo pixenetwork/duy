@@ -98,6 +98,73 @@ test('queue proof uses exact sourceHead match and bounded numeric-ms poller audi
   assert.match(queue, /exact source-head|\$heartbeatHead -eq \$markerHead/);
 });
 
+test('poller postcondition scans a bounded tail for recognized canonical audit rows only', () => {
+  // Regression (review 5036088324, HIGH): PollerFresh must not be proven by an
+  // arbitrary fresh audit row. It must (a) scan a bounded tail, (b) require a
+  // recognized managed poll-cycle/postcondition record with an allowed canonical
+  // kind + decision, and (c) fail closed on an unrelated fresh row.
+  assert.match(queue, /Get-Content .* -Tail 200/);
+  assert.match(queue, /foreach \(\$line in \$tail\)/);
+  // Canonical kind + allowed decision allow-list (matches audit-log.mjs KINDS).
+  assert.match(queue, /\$allowedAuditKinds = @\('branch-check'/);
+  assert.match(queue, /'terminal','receipt'\)/);
+  assert.match(queue, /allowedAuditDecisions = @\('ACCEPTED','CLAIMED','PUBLISHED','COMPLETED'\)/);
+  assert.match(queue, /\$allowedAuditKinds\) -notcontains \[string\]\$row\.kind/);
+  assert.match(queue, /allowedAuditDecisions\) -notcontains/);
+  // Bounded numeric Unix-ms freshness parsing is preserved.
+  assert.match(queue, /\[long\]::TryParse\(\(\[string\]\$row\.at\)\.Trim\(\)/);
+  assert.match(queue, /946684800000/); // year-2000 bound
+  assert.match(queue, /253402300799999/); // year-9999 bound
+  // Correlation/source context where available must be well-formed.
+  assert.match(queue, /headSha -notmatch '\^\[0-9a-fA-F\]\{40\}\$'/);
+});
+
+test('poller postcondition fails closed: fresh unrelated audit row must not prove PollerFresh', () => {
+  // The scanner must never accept a row whose kind/decision is not a recognized
+  // poll-cycle postcondition, and must only match rows passing the allowlist.
+  const kindCheck = /if \(@\(\$allowedAuditKinds\) -notcontains \[string\]\$row\.kind\) \{ continue \}/;
+  assert.match(queue, kindCheck);
+  const decisionCheck = /if \(@\(\$allowedAuditDecisions\) -notcontains \(\[string\]\$row\.decision\)\.ToUpperInvariant\(\)\) \{ continue \}/;
+  assert.match(queue, decisionCheck);
+  // Only healthy decisions are allow-listed; DENIED/RETRY/FAILED are excluded.
+  assert.match(queue, /\$allowedAuditDecisions = @\('ACCEPTED','CLAIMED','PUBLISHED','COMPLETED'\)/);
+  assert.doesNotMatch(queue, /allowedAuditDecisions = @\([^)]*'RETRY'[^)]*\)/);
+  assert.doesNotMatch(queue, /allowedAuditDecisions = @\([^)]*'DENIED'[^)]*\)/);
+  assert.doesNotMatch(queue, /allowedAuditDecisions = @\([^)]*'FAILED'[^)]*\)/);
+});
+
+test('windows mcp identity binds listener owner to the canonical task executable by exact PID', () => {
+  // Regression (review 5036088324, HIGH): 127.0.0.1:8000 alone must not be
+  // enough. Identity must be bound by exact-PID inspection to the expected
+  // windows-mcp-server task executable, with no broad process enumeration.
+  assert.match(windowsMcp, /Get-ScheduledTask -TaskName 'windows-mcp-server'/);
+  assert.match(windowsMcp, /\$expectedExe = \[IO\.Path\]::GetFullPath/);
+  assert.match(windowsMcp, /@\(\$task\.Actions\)\[0\]\.Execute/);
+  assert.match(windowsMcp, /Get-Process -Id \$ownerPid/);
+  assert.match(windowsMcp, /\$procPath\.Equals\(\$expectedExe, \[StringComparison\]::OrdinalIgnoreCase\)/);
+  assert.doesNotMatch(windowsMcp, /Get-CimInstance/i);
+  assert.doesNotMatch(windowsMcp, /Win32_Process/i);
+  // ok requires the canonical task to be Running, not merely present.
+  assert.match(windowsMcp, /\$state\.TaskState -eq 'Running'/);
+});
+
+test('watchdog task identity requires canonical WorkingDirectory, exact script path, and fixed args', () => {
+  // Regression (review 5036088324, HIGH): a same-name/spoofed watchdog script
+  // path must fail. Identity must bind canonical WorkingDirectory to the runtime,
+  // the exact checked-in script path, and fixed expected arguments.
+  assert.match(queue, /function Test-WatchdogVerified\(\$watchdog, \[string\]\$runtime\)/);
+  // Canonical WorkingDirectory must equal the verified queue runtime.
+  assert.match(queue, /\$workingDirectory\.Equals\(\$runtime, \[StringComparison\]::OrdinalIgnoreCase\)/);
+  // Exact checked-in script path bound to the runtime.
+  assert.match(queue, /scripts\\windows\\watch-local-worker-queue\.ps1/);
+  assert.match(queue, /\$scriptPath\.Equals\(\$expectedScript, \[StringComparison\]::OrdinalIgnoreCase\)/);
+  // Fixed expected args: only canonical PowerShell invocation flags and -ForceRecycle.
+  assert.match(queue, /notin @\('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-ForceRecycle'\)\)/);
+  // The runtime is resolved before watchdog verification in recover.
+  assert.match(queue, /\$runtime = Get-CanonicalRuntime/);
+  assert.match(queue, /Test-WatchdogVerified \$watchdog -runtime \$runtime/);
+});
+
 test('parent provisions exactly two commands and retires Jarvis Control idempotently', () => {
   // The retire filter lists all canonical/legacy triggers.
   assert.match(
