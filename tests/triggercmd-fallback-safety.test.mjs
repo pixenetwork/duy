@@ -114,3 +114,17 @@ test('parent provisions exactly two commands and retires Jarvis Control idempote
   assert.ok((parent.match(/Where-Object trigger -eq 'Jarvis Queue'/g) || []).length >= 1);
   assert.match(parent, /Jarvis Control/);
 });
+
+test('both installed command entries declare allowParams as string true, not boolean', () => {
+  // TRIGGERcmd commands.json expects the STRING "true" (allowParams: "true"),
+  // not a JSON boolean, so the agent does not silently disable/misparse status|recover params.
+  const paramRe = /trigger\s*=\s*'([^']+)'[\r\n]*(?:[\s\S]*?)allowParams\s*=\s*([^\r\n]+)/g;
+  const entries = new Map();
+  for (const m of parent.matchAll(paramRe)) entries.set(m[1].trim(), m[2].trim());
+
+  assert.equal(entries.size, 2, 'expected exactly two command entries');
+  for (const [trigger, allow] of entries) {
+    // Matched group includes the surrounding single quotes, e.g. 'true'.
+    assert.equal(allow, "'true'", `${trigger} allowParams must be the string 'true'`);
+  }
+});

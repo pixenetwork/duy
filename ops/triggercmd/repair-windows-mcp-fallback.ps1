@@ -323,7 +323,7 @@ $commands += [pscustomobject]@{
   ground = 'background'
   voice = 'jarvis windows mcp'
   voiceReply = '{{result}}'
-  allowParams = $true
+  allowParams = 'true'
   description = 'Check or recover Windows MCP. Parameter: status or recover.'
 }
 
@@ -333,7 +333,7 @@ $commands += [pscustomobject]@{
   ground = 'background'
   voice = 'jarvis queue'
   voiceReply = '{{result}}'
-  allowParams = $true
+  allowParams = 'true'
   description = 'Check or recover the managed Jarvis local worker queue via its canonical watchdog. Parameter: status or recover.'
 }
 
