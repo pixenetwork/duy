@@ -1,0 +1,21 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+const file = new URL('./hostops-v3-pc-cutover-v6.ps1', import.meta.url);
+assert.equal(fs.existsSync(file), true, 'V6 cutover script must exist');
+const s = fs.readFileSync(file, 'utf8');
+assert.match(s, /DESKTOP-7CM41S6/);
+assert.match(s, /fb50bec64a0452fd0b70655eead4468a90f18fa5/);
+assert.match(s, /b392533affb06f6fc1c98b531b1cb84ca6bea0ce/);
+assert.match(s, /aee1e1c4ce53e17748e381bded9e404105ececec5aebf45ce1e65485b7ebc5e4/);
+assert.match(s, /a0b84dea3e2ca4a06eb31aaf4eabc2be6581543f0c30241028ce3c59a3efba48/);
+const chain = ['159eb154daf93299b7274c09b3bb40315f971316','35c9107024760ddfcbf7c2c409c53badfc46e823','59ac743a521c7185c344f96f48484d340a2a526c','0691c3ca8f8e9ac17308d34b801c7d6f70209363','1ae2d33477335b9cf43c4dde3675448837135323'];
+let last=-1; for (const h of chain) { const i=s.indexOf(h); assert.ok(i>last, `ordered control head ${h}`); last=i; }
+assert.match(s, /bootstrap-jarvis-remote-control-local\.ps1/);
+assert.match(s, /build-hostops-v3-portable\.mjs/);
+assert.match(s, /hostops-v3-smoke\.mjs/);
+assert.match(s, /--suite["']?,?[\s\S]{0,80}acceptance/);
+assert.match(s, /Get-FileHash[\s\S]{0,100}SHA256/i);
+assert.match(s, /issues\/1035\/comments/);
+assert.doesNotMatch(s, /Remote Desktop Commander|WinRM|\bssh\b|\brdp\b/i);
+assert.doesNotMatch(s, /Get-Content[^\n]*(hostops\.token|receipt-signing\.key)/i);
+console.log('PC HostOps v3 V6 contract: PASS');
