@@ -18,6 +18,31 @@ if (-not (Test-Path -LiteralPath $queueScript -PathType Leaf)) { throw 'queue sc
 $body = Get-Content -LiteralPath $queueScript -Raw
 if ($body -notmatch [regex]::Escape('Start-ScheduledTask -TaskName $watchdogTaskName')) { throw 'queue watchdog recovery authority mismatch' }
 
+# Before starting the existing watchdog task, prove that the installed runtime
+# still matches the activation manifest and that status is reading the poller's
+# configured canonical audit path. A drifted runtime must never be executed first
+# and rejected only afterward.
+$preflightPattern = @'
+    \$runtime = Get-CanonicalRuntime\r?\n    \$watchdog = Get-ScheduledTask -TaskName \$watchdogTaskName -ErrorAction SilentlyContinue\r?\n    if \(-not \$watchdog\) \{ \$fail = 'watchdog-task-missing'; throw \$fail \}\r?\n    if \(-not \(Test-WatchdogVerified \$watchdog -runtime \$runtime\)\) \{ \$fail = 'watchdog-task-unverified'; throw \$fail \}\r?\n    if \(\[string\]\$watchdog\.State -eq 'Disabled'\) \{ \$fail = 'watchdog-task-disabled'; throw \$fail \}\r?\n    try \{ Start-ScheduledTask -TaskName \$watchdogTaskName -ErrorAction Stop \| Out-Null \}\r?\n    catch \{ \$fail = 'watchdog-start-failed'; throw \$fail \}
+'@
+$preflightReplacement = @'
+    $runtime = Get-CanonicalRuntime
+    $watchdog = Get-ScheduledTask -TaskName $watchdogTaskName -ErrorAction SilentlyContinue
+    if (-not $watchdog) { $fail = 'watchdog-task-missing'; throw $fail }
+    if (-not (Test-WatchdogVerified $watchdog -runtime $runtime)) { $fail = 'watchdog-task-unverified'; throw $fail }
+    if ([string]$watchdog.State -eq 'Disabled') { $fail = 'watchdog-task-disabled'; throw $fail }
+    $preflightState = Get-MonitoredQueue -runtime $runtime
+    $preflightDiagnostics = Get-QueueDiagnostics -runtime $runtime -state $preflightState
+    if (-not $preflightDiagnostics.RuntimeIntegrity) { $fail = 'runtime-integrity-unverified'; throw $fail }
+    if (-not $preflightDiagnostics.AuditPathCanonical) { $fail = 'audit-path-unverified'; throw $fail }
+    try { Start-ScheduledTask -TaskName $watchdogTaskName -ErrorAction Stop | Out-Null }
+    catch { $fail = 'watchdog-start-failed'; throw $fail }
+'@
+$preflightRegex = [regex]::new($preflightPattern, [System.Text.RegularExpressions.RegexOptions]::Singleline)
+$preflightMatches = $preflightRegex.Matches($body)
+if ($preflightMatches.Count -ne 1) { throw 'queue recovery preflight replacement count must equal 1' }
+$body = $preflightRegex.Replace($body, $preflightReplacement, 1)
+
 # Replace exactly the known 90-second synchronous polling block. TRIGGERcmd's
 # MCP result channel waits only a few seconds for SendResult; the prior loop
 # guaranteed dispatch-only behavior whenever recovery was not already complete.
