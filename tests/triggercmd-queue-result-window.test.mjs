@@ -44,4 +44,26 @@ test('patched recover uses one immediate canonical postcondition check', () => {
   assert.match(overlay, /HeadMatch/);
   assert.match(overlay, /PollerFresh/);
   assert.match(overlay, /heartbeatNewEnough/);
+  assert.match(overlay, /\$d\.RuntimeIntegrity/);
+  assert.match(overlay, /\$d\.AuditPathCanonical/);
+});
+
+test('queue status binds runtime integrity and poller diagnostics without new execution authority', () => {
+  const overlay = loadOverlay();
+  assert.match(overlay, /jarvis-local-always-on-activation-receipt\.json/);
+  assert.match(overlay, /Get-FileHash -LiteralPath \$candidate -Algorithm SHA256/);
+  assert.match(overlay, /receipt\.sourceHead/);
+  assert.match(overlay, /provider-worker-queue-supervisor\.mjs/);
+  assert.match(overlay, /provider-worker-remote-control-loop\.mjs/);
+  assert.match(overlay, /jarvis-remote-control-poller\.mjs/);
+  assert.match(overlay, /remote-control\\poll-cycle\.mjs/);
+  assert.match(overlay, /watch-local-worker-queue\.ps1/);
+  assert.match(overlay, /remote-control\.json/);
+  assert.match(overlay, /AuditPathCanonical/);
+  assert.match(overlay, /runtimeIntegrity=/);
+  assert.match(overlay, /pollerReason=/);
+  assert.match(overlay, /activation-manifest-invalid/);
+  assert.match(overlay, /audit-path-mismatch/);
+  assert.match(overlay, /no-accepted-audit/);
+  assert.doesNotMatch(overlay, /Invoke-Expression|Invoke-Command|WinRM|psexec|cmd\.exe/i);
 });
