@@ -12,6 +12,12 @@ function loadOverlay() {
   return readFileSync(overlayPath, 'utf8');
 }
 
+function extractHere(overlay, name) {
+  const match = overlay.match(new RegExp(`\\$${name}\\s*=\\s*@'\\n([\\s\\S]*?)\\n'@`, 'm'));
+  assert.ok(match, `missing here-string $${name}`);
+  return match[1];
+}
+
 test('queue recovery overlay chains through the reviewed transport overlay', () => {
   const overlay = loadOverlay();
   assert.match(overlay, /repair-windows-mcp-transport-overlay\.ps1/);
@@ -46,6 +52,12 @@ test('patched recover uses one immediate canonical postcondition check', () => {
   assert.match(overlay, /heartbeatNewEnough/);
   assert.match(overlay, /\$d\.RuntimeIntegrity/);
   assert.match(overlay, /\$d\.AuditPathCanonical/);
+  const preflight = extractHere(overlay, 'preflightReplacement');
+  const diagnosticIndex = preflight.indexOf('$preflightDiagnostics = Get-QueueDiagnostics');
+  const startIndex = preflight.indexOf('Start-ScheduledTask -TaskName $watchdogTaskName -ErrorAction Stop');
+  assert.ok(diagnosticIndex >= 0 && startIndex > diagnosticIndex, 'integrity proof must precede watchdog start');
+  assert.match(preflight, /runtime-integrity-unverified/);
+  assert.match(preflight, /audit-path-unverified/);
 });
 
 test('queue status binds runtime integrity and poller diagnostics without new execution authority', () => {
