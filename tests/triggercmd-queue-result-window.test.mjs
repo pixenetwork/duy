@@ -60,6 +60,16 @@ test('patched recover uses one immediate canonical postcondition check', () => {
   assert.match(preflight, /audit-path-unverified/);
 });
 
+test('overlay refuses to patch a target missing diagnostic dependency declarations', () => {
+  const overlay = loadOverlay();
+  assert.match(overlay, /queue dependency declaration missing or late/);
+  assert.match(overlay, /heartbeatRelativePath/);
+  assert.match(overlay, /\$epoch/);
+  assert.match(overlay, /pollerAuditPath/);
+  assert.match(overlay, /\$mainAnchorIndex/);
+  assert.match(overlay, /\$dependencyIndex -lt 0 -or \$dependencyIndex -gt \$mainAnchorIndex/);
+});
+
 test('queue status binds runtime integrity and poller diagnostics without new execution authority', () => {
   const overlay = loadOverlay();
   assert.match(overlay, /jarvis-local-always-on-activation-receipt\.json/);
