@@ -18,6 +18,25 @@ if (-not (Test-Path -LiteralPath $queueScript -PathType Leaf)) { throw 'queue sc
 $body = Get-Content -LiteralPath $queueScript -Raw
 if ($body -notmatch [regex]::Escape('Start-ScheduledTask -TaskName $watchdogTaskName')) { throw 'queue watchdog recovery authority mismatch' }
 
+# The injected diagnostics intentionally consume variables already owned by the
+# generated Jarvis Queue wrapper. Prove those declarations exist before the
+# wrapper's main entrypoint so a future generator change cannot turn them into
+# undefined or late-bound dependencies.
+$mainAnchor = '$fail = ''none'''
+$mainAnchorIndex = $body.IndexOf($mainAnchor, [StringComparison]::Ordinal)
+if ($mainAnchorIndex -lt 0) { throw 'queue main entry anchor missing' }
+$dependencyDeclarations = @(
+  '$heartbeatRelativePath = ''reports\provider-worker-local-queue-heartbeat.json''',
+  '$epoch = [datetime]''1970-01-01T00:00:00Z''',
+  '$pollerAuditPath = Join-Path $env:ProgramData ''PixelNetwork\JarvisHostOps\remote-control-audit.jsonl'''
+)
+foreach ($dependencyDeclaration in $dependencyDeclarations) {
+  $dependencyIndex = $body.IndexOf($dependencyDeclaration, [StringComparison]::Ordinal)
+  if ($dependencyIndex -lt 0 -or $dependencyIndex -gt $mainAnchorIndex) {
+    throw 'queue dependency declaration missing or late'
+  }
+}
+
 # Before starting the existing watchdog task, prove that the installed runtime
 # still matches the activation manifest and that status is reading the poller's
 # configured canonical audit path. A drifted runtime must never be executed first
