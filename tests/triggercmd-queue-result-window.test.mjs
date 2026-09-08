@@ -13,7 +13,7 @@ function loadOverlay() {
 }
 
 function extractHere(overlay, name) {
-  const match = overlay.match(new RegExp(`\\$${name}\\s*=\\s*@'\\n([\\s\\S]*?)\\n'@`, 'm'));
+  const match = overlay.match(new RegExp(`\\$${name}\\s*=\\s*@'\\r?\\n([\\s\\S]*?)\\r?\\n'@`, 'm'));
   assert.ok(match, `missing here-string $${name}`);
   return match[1];
 }
