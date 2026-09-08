@@ -12,6 +12,12 @@ function loadOverlay() {
   return readFileSync(overlayPath, 'utf8');
 }
 
+function extractHere(overlay, name) {
+  const match = overlay.match(new RegExp(`\\$${name}\\s*=\\s*@'\\r?\\n([\\s\\S]*?)\\r?\\n'@`, 'm'));
+  assert.ok(match, `missing here-string $${name}`);
+  return match[1];
+}
+
 test('queue recovery overlay chains through the reviewed transport overlay', () => {
   const overlay = loadOverlay();
   assert.match(overlay, /repair-windows-mcp-transport-overlay\.ps1/);
@@ -44,4 +50,42 @@ test('patched recover uses one immediate canonical postcondition check', () => {
   assert.match(overlay, /HeadMatch/);
   assert.match(overlay, /PollerFresh/);
   assert.match(overlay, /heartbeatNewEnough/);
+  assert.match(overlay, /\$d\.RuntimeIntegrity/);
+  assert.match(overlay, /\$d\.AuditPathCanonical/);
+  const preflight = extractHere(overlay, 'preflightReplacement');
+  const diagnosticIndex = preflight.indexOf('$preflightDiagnostics = Get-QueueDiagnostics');
+  const startIndex = preflight.indexOf('Start-ScheduledTask -TaskName $watchdogTaskName -ErrorAction Stop');
+  assert.ok(diagnosticIndex >= 0 && startIndex > diagnosticIndex, 'integrity proof must precede watchdog start');
+  assert.match(preflight, /runtime-integrity-unverified/);
+  assert.match(preflight, /audit-path-unverified/);
+});
+
+test('overlay refuses to patch a target missing diagnostic dependency declarations', () => {
+  const overlay = loadOverlay();
+  assert.match(overlay, /queue dependency declaration missing or late/);
+  assert.match(overlay, /heartbeatRelativePath/);
+  assert.match(overlay, /\$epoch/);
+  assert.match(overlay, /pollerAuditPath/);
+  assert.match(overlay, /\$mainAnchorIndex/);
+  assert.match(overlay, /\$dependencyIndex -lt 0 -or \$dependencyIndex -gt \$mainAnchorIndex/);
+});
+
+test('queue status binds runtime integrity and poller diagnostics without new execution authority', () => {
+  const overlay = loadOverlay();
+  assert.match(overlay, /jarvis-local-always-on-activation-receipt\.json/);
+  assert.match(overlay, /Get-FileHash -LiteralPath \$candidate -Algorithm SHA256/);
+  assert.match(overlay, /receipt\.sourceHead/);
+  assert.match(overlay, /provider-worker-queue-supervisor\.mjs/);
+  assert.match(overlay, /provider-worker-remote-control-loop\.mjs/);
+  assert.match(overlay, /jarvis-remote-control-poller\.mjs/);
+  assert.match(overlay, /remote-control\\poll-cycle\.mjs/);
+  assert.match(overlay, /watch-local-worker-queue\.ps1/);
+  assert.match(overlay, /remote-control\.json/);
+  assert.match(overlay, /AuditPathCanonical/);
+  assert.match(overlay, /runtimeIntegrity=/);
+  assert.match(overlay, /pollerReason=/);
+  assert.match(overlay, /activation-manifest-invalid/);
+  assert.match(overlay, /audit-path-mismatch/);
+  assert.match(overlay, /no-accepted-audit/);
+  assert.doesNotMatch(overlay, /Invoke-Expression|Invoke-Command|WinRM|psexec|cmd\.exe/i);
 });
