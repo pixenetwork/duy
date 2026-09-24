@@ -1,0 +1,6 @@
+# Deterministic UI hash inputs must preserve LF bytes across platforms.
+# text=auto keeps binary assets binary while forcing LF for detected text files.
+resources/pixel_ui/web/** text=auto eol=lf
+design/tokens/pixel.tokens.json text eol=lf
+tools/generate-tokens.mjs text eol=lf
+tools/build-ui.mjs text eol=lf
