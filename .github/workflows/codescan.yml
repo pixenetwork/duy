@@ -37,18 +37,12 @@ jobs:
                         ~/.sonar
                     key: ${{ runner.os }}-sonar
                     restore-keys: ${{ runner.os }}-sonar
-            -   name: Set up Java 17
-                uses: actions/setup-java@v4
-                with:
-                    distribution: temurin
-                    java-version: '17'
             -   name: Run Analysis
-                uses: codescan-io/codescan-scanner-action@3788a9c7fdbfd83664e86e36a81370a653bc6653
+                uses: codescan-io/codescan-scanner-action@5b2e8c5683ef6a5adc8fa3b7950bb07debccce12
                 with:
                     login: ${{ secrets.CODESCAN_AUTH_TOKEN }}
                     organization: ${{ secrets.CODESCAN_ORGANIZATION_KEY }}
                     projectKey: ${{ secrets.CODESCAN_PROJECT_KEY }}
-                    generateSarifFile: true
             -   name: Upload SARIF file
                 uses: github/codeql-action/upload-sarif@v3
                 with:
